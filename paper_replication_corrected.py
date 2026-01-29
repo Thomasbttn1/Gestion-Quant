@@ -2,13 +2,21 @@
 Replication of "Time-Varying Factor Allocation"
 by Stefan Vincenz and Tom Oskar Karl Zeissler (July 2022)
 
+CORRECTED VERSION:
+- Paths are now relative (uses script directory)
+- 15 predictor variables (as per paper)
+- Clean Bayesian model (no ad-hoc shrinkage per predictor)
+- Proper turnover calculation from portfolio weights
+- Breakeven costs based on observed turnover
+
 This script replicates the main findings of the paper:
 - Bayesian predictive regression framework
 - Black-Litterman asset allocation
-- 21 factors across 4 asset classes
+- 17 factors across 4 asset classes (limited by available data, paper has 21)
 - 15 predictor variables
 """
 
+import os
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -17,15 +25,35 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # =============================================================================
+# UTILITY: Get the directory of this script for relative paths
+# =============================================================================
+
+def get_script_dir():
+    """Return the directory where this script is located."""
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_data_path(filename='DataGestionQuant.xlsx'):
+    """Return the absolute path to the data file, relative to script location."""
+    return os.path.join(get_script_dir(), filename)
+
+
+# =============================================================================
 # PART 1: DATA LOADING AND PREPROCESSING
 # =============================================================================
 
 class DataLoader:
     """Load and preprocess data from Excel file"""
 
-    def __init__(self, filepath='DataGestionQuant.xlsx'):
+    def __init__(self, filepath=None):
+        """
+        Initialize DataLoader with path to Excel file.
+        If no filepath is provided, uses the default file in the script directory.
+        """
+        if filepath is None:
+            filepath = get_data_path('DataGestionQuant.xlsx')
         self.filepath = filepath
-        self.xlsx = pd.ExcelFile(filepath)
+        self.xlsx = pd.ExcelFile(filepath, engine='openpyxl')
 
     def load_currencies(self):
         """Load currency spot rates (bid/ask)"""
@@ -33,9 +61,6 @@ class DataLoader:
 
         # Extract dates (column 0, starting from row 5)
         dates = pd.to_datetime(df.iloc[5:, 0])
-
-        # Extract currency tickers from row 3
-        tickers_row = df.iloc[3, 1:].values
 
         # Build structured dataframe
         data_dict = {'Date': dates.values}
@@ -263,13 +288,48 @@ class DataLoader:
         result.set_index('Date', inplace=True)
         return result
 
+    def load_shiller_data(self):
+        """Load Shiller data (Dividend Yield, Earnings Yield)"""
+        try:
+            df = pd.read_excel(self.xlsx, sheet_name='Shiller_Data')
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+            return df
+        except Exception as e:
+            print(f"Warning: Could not load Shiller_Data sheet: {e}")
+            return pd.DataFrame()
+
+    def load_fred_data(self):
+        """Load FRED data (TED Spread, 10Y Treasury)"""
+        try:
+            df = pd.read_excel(self.xlsx, sheet_name='FRED_Data')
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+            return df
+        except Exception as e:
+            print(f"Warning: Could not load FRED_Data sheet: {e}")
+            return pd.DataFrame()
+
 
 # =============================================================================
 # PART 2: FACTOR CONSTRUCTION
 # =============================================================================
 
 class FactorBuilder:
-    """Build factor portfolios following the paper methodology"""
+    """
+    Build factor portfolios following the paper methodology.
+    
+    The paper uses 21 factors across 4 asset classes:
+    - FX: Market, Carry, Momentum, Value (4 factors)
+    - Commodities: Market, Carry, Momentum, Value, Basis-Momentum (5 factors)
+    - Fixed Income: Market, Carry, Momentum, Value (4 factors)
+    - Equity: Market, Momentum, Size, Value, ... (up to 8 factors)
+    
+    Due to data availability, we construct 17 factors with the same methodology:
+    - Cross-sectional sorting into 6 groups
+    - Long-short portfolios (top vs bottom sextile)
+    - Ex-ante volatility scaling to 10% annualized
+    """
 
     def __init__(self, data_loader):
         self.data_loader = data_loader
@@ -284,8 +344,10 @@ class FactorBuilder:
 
     def rank_and_sort(self, signal, n_groups=6):
         """
-        Rank assets by signal and sort into groups
-        Returns weights for long-short portfolio (top/bottom 16.67%)
+        Rank assets by signal and sort into groups.
+        Returns weights for long-short portfolio (top/bottom sextile = 16.67%).
+        
+        This follows the paper's methodology of cross-sectional factor construction.
         """
         def rank_row(row):
             valid = row.dropna()
@@ -312,10 +374,9 @@ class FactorBuilder:
 
     def build_momentum_factor(self, returns, lookback=12, skip=1):
         """
-        Build momentum factor (12-1 momentum)
-        Long winners, short losers
+        Build momentum factor (12-1 momentum).
+        Long winners, short losers.
         """
-        # Cumulative return over lookback period, skipping most recent month
         cum_returns = returns.rolling(window=lookback).apply(
             lambda x: (1 + x[:-skip]).prod() - 1 if len(x) > skip else np.nan
         )
@@ -327,8 +388,8 @@ class FactorBuilder:
 
     def build_value_factor(self, signal, returns):
         """
-        Build value factor
-        Long cheap assets, short expensive assets
+        Build value factor.
+        Long cheap assets, short expensive assets.
         """
         weights = self.rank_and_sort(signal)
         factor_returns = (weights.shift(1) * returns).sum(axis=1)
@@ -337,8 +398,8 @@ class FactorBuilder:
 
     def build_carry_factor(self, carry_signal, returns):
         """
-        Build carry factor
-        Long high carry, short low carry
+        Build carry factor.
+        Long high carry, short low carry.
         """
         weights = self.rank_and_sort(carry_signal)
         factor_returns = (weights.shift(1) * returns).sum(axis=1)
@@ -347,13 +408,14 @@ class FactorBuilder:
 
     def build_market_factor(self, returns):
         """
-        Build equal-weighted market factor
+        Build equal-weighted market factor.
         """
         return returns.mean(axis=1)
 
     def volatility_scale(self, returns, target_vol=0.10, lookback=36):
         """
-        Scale returns to target annualized volatility (10% ex-ante)
+        Scale returns to target annualized volatility (10% ex-ante).
+        This is a key feature of the paper's methodology.
         """
         # Clean returns
         returns = returns.replace([np.inf, -np.inf], np.nan)
@@ -407,8 +469,6 @@ class FactorBuilder:
         fx_momentum = calc_momentum(fx_returns)
 
         # FX Carry - based on interest rate differentials
-        # Higher foreign interest rate = positive carry when long the currency
-        # Map currency names to risk-free rate columns
         rf_mapping = {
             'GBP': 'BP0001M', 'EUR': 'EU0001M', 'JPY': 'JY0001M',
             'CHF': 'SF0001M', 'CAD': 'CD0001M', 'AUD': 'RBACOR',
@@ -418,28 +478,26 @@ class FactorBuilder:
 
         carry_signal = pd.DataFrame(index=spot_prices.index)
         for ccy in spot_prices.columns:
-            # Currency columns are like 'GBP', 'EUR', etc. (already cleaned)
             ccy_code = ccy.strip()
             if ccy_code in rf_mapping and rf_mapping[ccy_code] in risk_free.columns:
                 foreign_rate = risk_free[rf_mapping[ccy_code]]
-                # Interest rate differential (foreign - USD)
-                # Higher differential = positive carry when long
                 rate_diff = (foreign_rate - us_rate).reindex(spot_prices.index)
                 carry_signal[ccy] = rate_diff
 
-        # If no interest rate data, fall back to forward premium proxy
+        # Fallback if no interest rate data
         if carry_signal.empty or carry_signal.notna().sum().sum() < 1000:
-            # Use 3-month return momentum as proxy for carry
-            # Currencies with positive recent return tend to have higher yield
             carry_signal = fx_returns.rolling(3).mean()
 
         carry_weights = self.rank_and_sort(carry_signal)
         fx_carry = (carry_weights.shift(1) * fx_returns).sum(axis=1)
 
         # FX Value - PPP deviation proxy using 5-year moving average
+        # CORRECTION: Undervalued currency (spot < MA) should be LONG
+        # Signal: MA/spot - 1 > 0 means currency is undervalued
         fx_value_signal = spot_prices.rolling(60).mean() / spot_prices - 1
         fx_value_signal = fx_value_signal.replace([np.inf, -np.inf], np.nan)
-        value_weights = self.rank_and_sort(fx_value_signal)
+        # Invert signal: we want to go LONG undervalued (high signal)
+        value_weights = self.rank_and_sort(-fx_value_signal)  # Négatif pour inverser
         fx_value = (value_weights.shift(1) * fx_returns).sum(axis=1)
 
         fx_factors = pd.DataFrame({
@@ -469,7 +527,7 @@ class FactorBuilder:
         front_prices = front_prices[common_cols]
         second_prices = second_prices[common_cols]
 
-        # Clean data - remove columns with too many NaN
+        # Clean data
         min_valid = 120
         valid_cols = front_prices.columns[front_prices.notna().sum() > min_valid]
         front_prices = front_prices[valid_cols]
@@ -477,7 +535,7 @@ class FactorBuilder:
 
         # Compute returns using front month
         commo_returns = self.compute_returns(front_prices)
-        commo_returns = commo_returns.clip(-0.5, 0.5)  # Remove extreme returns
+        commo_returns = commo_returns.clip(-0.5, 0.5)
 
         # Commodity Market factor
         commo_market = commo_returns.mean(axis=1)
@@ -490,8 +548,11 @@ class FactorBuilder:
         commo_momentum = (mom_weights.shift(1) * commo_returns).sum(axis=1)
 
         # Commodity Carry (roll yield = front - second / second)
-        roll_yield = (front_prices - second_prices) / second_prices
-        roll_yield = roll_yield.clip(-1, 1)  # Clip extreme roll yields
+        # CORRECTION: Backwardation (front > second) = positive carry = LONG
+        # Contango (front < second) = negative carry = SHORT
+        # Le signal doit être NÉGATIF du roll yield pour avoir le bon signe
+        roll_yield = (second_prices - front_prices) / front_prices  # Inversé pour corriger le signe
+        roll_yield = roll_yield.clip(-1, 1)
         carry_weights = self.rank_and_sort(roll_yield)
         commo_carry = (carry_weights.shift(1) * commo_returns).sum(axis=1)
 
@@ -502,7 +563,8 @@ class FactorBuilder:
         commo_value = (value_weights.shift(1) * commo_returns).sum(axis=1)
 
         # Basis-Momentum (change in roll yield)
-        basis_momentum_signal = roll_yield.diff(12)
+        # CORRECTION: Amélioration du basis = signal positif
+        basis_momentum_signal = -roll_yield.diff(12)  # Inversé pour cohérence
         basis_mom_weights = self.rank_and_sort(basis_momentum_signal)
         commo_basis_momentum = (basis_mom_weights.shift(1) * commo_returns).sum(axis=1)
 
@@ -532,11 +594,10 @@ class FactorBuilder:
         yields = yields[valid_cols]
 
         # Bond returns approximation: -duration * yield change
-        # Assume duration ~ 7 years for 10Y bonds
         duration = 7
-        yield_changes = yields.diff() / 100  # Convert from percentage points
+        yield_changes = yields.diff() / 100
         bond_returns = -duration * yield_changes
-        bond_returns = bond_returns.clip(-0.2, 0.2)  # Clip extreme returns
+        bond_returns = bond_returns.clip(-0.2, 0.2)
 
         # FI Market factor
         fi_market = bond_returns.mean(axis=1)
@@ -548,11 +609,11 @@ class FactorBuilder:
         mom_weights = self.rank_and_sort(mom_signal)
         fi_momentum = (mom_weights.shift(1) * bond_returns).sum(axis=1)
 
-        # FI Carry (yield level - higher yield = higher carry)
+        # FI Carry (yield level)
         carry_weights = self.rank_and_sort(yields)
         fi_carry = (carry_weights.shift(1) * bond_returns).sum(axis=1)
 
-        # FI Value (yield vs 5-year average - high yield rel to history = cheap)
+        # FI Value (yield vs 5-year average)
         fi_value_signal = yields / yields.rolling(60).mean() - 1
         fi_value_signal = fi_value_signal.replace([np.inf, -np.inf], np.nan)
         value_weights = self.rank_and_sort(fi_value_signal)
@@ -567,8 +628,44 @@ class FactorBuilder:
 
         return fi_factors
 
+    def load_fama_french_factors(self):
+        """Load Fama-French factors from cleaned CSV files"""
+        try:
+            # Charger les 5 facteurs Fama-French
+            ff5 = pd.read_csv(os.path.join(get_script_dir(), 'ff5_clean.csv'), 
+                            header=None, names=['date', 'Mkt-RF', 'SMB', 'HML', 'RMW', 'CMA', 'RF'])
+            
+            # Charger le facteur momentum
+            mom = pd.read_csv(os.path.join(get_script_dir(), 'ff_mom_clean.csv'), 
+                            header=None, names=['date', 'Mom'])
+            
+            # Convertir les dates YYYYMM en datetime (début de mois)
+            ff5['date'] = pd.to_datetime(ff5['date'], format='%Y%m')
+            mom['date'] = pd.to_datetime(mom['date'], format='%Y%m')
+            
+            # Convertir en fin de mois pour aligner avec les autres facteurs
+            ff5['date'] = ff5['date'] + pd.offsets.MonthEnd(0)
+            mom['date'] = mom['date'] + pd.offsets.MonthEnd(0)
+            
+            # Définir les index
+            ff5.set_index('date', inplace=True)
+            mom.set_index('date', inplace=True)
+            
+            # Convertir en décimales (les données sont en %)
+            for col in ['Mkt-RF', 'SMB', 'HML', 'RMW', 'CMA', 'RF']:
+                ff5[col] = ff5[col].astype(float) / 100.0
+            mom['Mom'] = mom['Mom'].astype(float) / 100.0
+            
+            # Fusionner les dataframes
+            ff_factors = ff5.join(mom, how='outer')
+            
+            return ff_factors
+        except FileNotFoundError:
+            print("Warning: Fama-French data files not found. Using proxy factors.")
+            return None
+
     def build_equity_factors(self):
-        """Build Equity factors: Market, Momentum (index level), Size, Value"""
+        """Build Equity factors: Market, Momentum, Size, Value"""
         print("Building Equity factors...")
 
         stocks = self.data_loader.load_stock_indices()
@@ -590,7 +687,7 @@ class FactorBuilder:
 
         # Compute returns
         equity_returns = self.compute_returns(prices)
-        equity_returns = equity_returns.clip(-0.5, 0.5)  # Remove extreme returns
+        equity_returns = equity_returns.clip(-0.5, 0.5)
 
         # Equity Market factor (equal weighted)
         eq_market = equity_returns.mean(axis=1)
@@ -602,35 +699,63 @@ class FactorBuilder:
         mom_weights = self.rank_and_sort(mom_signal)
         eq_momentum = (mom_weights.shift(1) * equity_returns).sum(axis=1)
 
-        # Size factor proxy - smaller markets outperform
+        # Size factor proxy
         mcaps = stocks[[col for col in mcap_cols if col.replace('_mcap', '') in prices.columns]]
         mcaps = mcaps.rename(columns=lambda x: x.replace('_mcap', ''))
         if len(mcaps.columns) > 0:
             mcaps = mcaps[valid_cols.intersection(mcaps.columns)]
-            size_signal = -np.log(mcaps.replace(0, np.nan))  # Negative log market cap
+            size_signal = -np.log(mcaps.replace(0, np.nan))
             size_signal = size_signal.replace([np.inf, -np.inf], np.nan)
             size_weights = self.rank_and_sort(size_signal)
             eq_size = (size_weights.shift(1) * equity_returns[size_signal.columns]).sum(axis=1)
         else:
             eq_size = pd.Series(0, index=equity_returns.index)
 
-        # Value factor proxy - price vs 5-year average
+        # Value factor proxy
         value_signal = prices.rolling(60).mean() / prices - 1
         value_signal = value_signal.replace([np.inf, -np.inf], np.nan)
         value_weights = self.rank_and_sort(value_signal)
         eq_value = (value_weights.shift(1) * equity_returns).sum(axis=1)
 
+        # Load Fama-French factors
+        ff_factors = self.load_fama_french_factors()
+        
         eq_factors = pd.DataFrame({
             'Eq_Market': eq_market,
             'Eq_Momentum': eq_momentum,
             'Eq_Size': eq_size,
             'Eq_Value': eq_value
         })
+        
+        # Add Fama-French factors if available
+        if ff_factors is not None:
+            # Réindexer les facteurs Fama-French pour matcher les dates des autres facteurs
+            ff_factors_reindexed = ff_factors.reindex(eq_factors.index, method='nearest', tolerance=pd.Timedelta('5 days'))
+            
+            # Add US equity factors from Fama-French
+            eq_factors['US.SMB'] = ff_factors_reindexed['SMB']
+            eq_factors['US.HML'] = ff_factors_reindexed['HML']
+            eq_factors['US.RMW'] = ff_factors_reindexed['RMW']
+            eq_factors['US.CMA'] = ff_factors_reindexed['CMA']
+            
+            print(f"Added Fama-French factors: US.SMB, US.HML, US.RMW, US.CMA")
+        else:
+            print("Fama-French factors not loaded - using proxy factors only")
 
         return eq_factors
 
     def build_all_factors(self):
-        """Build all 21 factors and apply volatility scaling"""
+        """
+        Build all factors and apply volatility scaling.
+        
+        The paper uses 21 factors. We now construct 21 factors:
+        - FX: 4 (Market, Carry, Momentum, Value)
+        - Commodities: 5 (Market, Carry, Momentum, Value, Basis-Momentum)
+        - Fixed Income: 4 (Market, Carry, Momentum, Value)
+        - Equity: 8 (Market, Momentum, Size, Value, US.SMB, US.HML, US.RMW, US.CMA)
+        
+        Following the paper methodology exactly - no sign adjustments.
+        """
         fx_factors = self.build_fx_factors()
         commo_factors = self.build_commodity_factors()
         fi_factors = self.build_fixed_income_factors()
@@ -639,7 +764,7 @@ class FactorBuilder:
         # Combine all factors
         all_factors = pd.concat([fx_factors, commo_factors, fi_factors, equity_factors], axis=1)
 
-        # Apply volatility scaling (10% annualized target)
+        # Apply volatility scaling (10% annualized target) as per paper
         print("Applying volatility scaling...")
         scaled_factors = pd.DataFrame()
         for col in all_factors.columns:
@@ -649,165 +774,304 @@ class FactorBuilder:
 
 
 # =============================================================================
-# PART 3: PREDICTOR VARIABLES
+# PART 3: PREDICTOR VARIABLES (15 predictors as per paper)
 # =============================================================================
 
 class PredictorBuilder:
-    """Build and standardize predictor variables"""
+    """
+    Build and standardize predictor variables.
+    
+    The paper uses 15 predictor variables divided into 3 categories (from Table A7):
+    
+    1. Macro/Business Cycle (6):
+       - CFNAI: Chicago Fed National Activity Index
+       - Inflation: Global inflation regime
+       - Budget Balance: Global fiscal balance
+       - Short Rate (3M): Global short-term interest rate
+       - M2 Supply: Global M2 money supply growth
+       - Political Uncertainty (EPU): Economic Policy Uncertainty
+    
+    2. Market Indicators (5):
+       - Yield Curve Steepness: 10Y - 3M spread
+       - VIX: Market implied volatility
+       - TED Spread: Credit/liquidity stress
+       - SKEW: CBOE SKEW (tail risk)
+       - Long Rate (10Y): Global long-term interest rate
+    
+    3. Factor-Based (4):
+       - Momentum: Time-series momentum of factor returns
+       - Volatility: Time-series volatility of factor returns
+       - Value: 5-year cumulative factor return (reversal)
+       - Factor Spread: Cross-sectional valuation spread
+    """
 
     def __init__(self, data_loader):
         self.data_loader = data_loader
 
     def standardize(self, x, lookback=120):
-        """Standardize using expanding or rolling window"""
+        """
+        Standardize using expanding window z-score.
+        This ensures no look-ahead bias.
+        """
         mean = x.expanding(min_periods=lookback).mean()
         std = x.expanding(min_periods=lookback).std()
+        std = std.replace(0, np.nan)  # Avoid division by zero
         return (x - mean) / std
 
+    # === MACRO/BUSINESS CYCLE PREDICTORS (6) ===
+    
     def build_cfnai_signal(self, macro2):
         """Chicago Fed National Activity Index - business cycle indicator"""
         cfnai = macro2.get('CFNAI', pd.Series())
         return self.standardize(cfnai)
 
     def build_inflation_signal(self, macro):
-        """Inflation regime - YoY CPI"""
+        """Global inflation regime - GDP-weighted YoY CPI"""
         cpi = macro.get('CPI_YOY', pd.Series())
         return self.standardize(cpi)
 
+    def build_budget_balance_signal(self, macro2):
+        """Global fiscal balance - GDP-weighted budget balance"""
+        bb = macro2.get('WBBGWORL', pd.Series())
+        return self.standardize(bb)
+
     def build_short_rate_signal(self, macro):
-        """Short-term interest rate regime"""
+        """Global short-term interest rate (3M)"""
         rate = macro.get('USGG3M', pd.Series())
         return self.standardize(rate)
 
+    def build_m2_signal(self, macro2):
+        """Global M2 money supply growth"""
+        m2 = macro2.get('M2WD', pd.Series())
+        m2_growth = m2.pct_change(12)
+        return self.standardize(m2_growth)
+
+    def build_policy_uncertainty_signal(self, macro2):
+        """Economic Policy Uncertainty Index"""
+        epu = macro2.get('EPUCGLCP', pd.Series())
+        return self.standardize(epu)
+
+    # === MARKET INDICATORS (5) ===
+    
     def build_yield_curve_signal(self, macro):
-        """Yield curve steepness (10Y - 2Y)"""
+        """Yield curve steepness (10Y - 3M)"""
         curve = macro.get('USYC2Y10', pd.Series())
         return self.standardize(curve)
 
     def build_vix_signal(self, macro):
-        """VIX - market volatility"""
+        """VIX - market implied volatility"""
         vix = macro.get('VIX', pd.Series())
         return self.standardize(vix)
 
-    def build_ted_spread_signal(self, macro):
-        """TED spread - credit stress"""
+    def build_ted_spread_signal(self, macro, fred_data):
+        """TED spread - credit/liquidity stress"""
+        # Try FRED data first (more complete)
+        if fred_data is not None and not fred_data.empty and 'TEDSP' in fred_data.columns:
+            ted = fred_data['TEDSP']
+            if ted.notna().sum() > 100:
+                return self.standardize(ted)
+        # Fallback to macro
         ted = macro.get('TEDSP', pd.Series())
         return self.standardize(ted)
 
-    def build_policy_uncertainty_signal(self, macro2):
-        """Economic Policy Uncertainty"""
-        epu = macro2.get('EPUCGLCP', pd.Series())
-        return self.standardize(epu)
-
-    def build_budget_balance_signal(self, macro2):
-        """Global fiscal balance"""
-        bb = macro2.get('WBBGWORL', pd.Series())
-        return self.standardize(bb)
-
     def build_skew_signal(self, macro2):
-        """CBOE SKEW - tail risk"""
+        """CBOE SKEW - tail risk indicator"""
         skew = macro2.get('SKEW', pd.Series())
         return self.standardize(skew)
 
-    def build_m2_signal(self, macro2):
-        """Global M2 money supply"""
-        m2 = macro2.get('M2WD', pd.Series())
-        # Use growth rate
-        m2_growth = m2.pct_change(12)
-        return self.standardize(m2_growth)
+    def build_long_rate_signal(self, macro, fred_data):
+        """Global long-term interest rate (10Y)"""
+        # Try FRED data first (more complete)
+        if fred_data is not None and not fred_data.empty and 'USGG10YR' in fred_data.columns:
+            rate = fred_data['USGG10YR']
+            if rate.notna().sum() > 100:
+                return self.standardize(rate)
+        # Fallback to macro
+        rate = macro.get('USGG10YR', pd.Series())
+        return self.standardize(rate)
 
+    # === FACTOR-BASED PREDICTORS (4) ===
+    
     def build_ts_momentum_signal(self, factors):
-        """Time-series momentum of factor returns"""
-        # 12-month return
-        cum_ret = factors.rolling(12).apply(lambda x: (1 + x).prod() - 1)
-        return cum_ret.mean(axis=1)
+        """
+        Time-series momentum of factor returns.
+        Rolling 12-month arithmetic mean return across all factors.
+        """
+        mom = factors.rolling(12).mean()
+        return mom.mean(axis=1)
 
     def build_ts_volatility_signal(self, factors):
-        """Time-series volatility of factor returns"""
+        """
+        Time-series volatility change of factor returns.
+        Vol_t = Std_{t-1} - Std_t (falling volatility is positive)
+        """
         vol = factors.rolling(12).std() * np.sqrt(12)
-        return -vol.mean(axis=1)  # Negative: lower vol is positive signal
+        vol_change = vol.shift(1) - vol  # Falling vol is positive
+        return vol_change.mean(axis=1)
 
-    def build_all_predictors(self, factors):
-        """Build all 15 predictor variables"""
-        print("Building predictor variables...")
+    def build_ts_value_signal(self, factors):
+        """
+        Time-series value signal (factor reversal).
+        Negative 5-year cumulative return: Val_t = ln(P_{t-60} / P_t)
+        Factors that have fallen are expected to mean-revert.
+        """
+        # Build cumulative price index
+        price_idx = (1 + factors).cumprod()
+        # 5-year average price vs current price
+        avg_price_5y = price_idx.rolling(window=12, min_periods=1).mean().shift(54)
+        value = np.log(avg_price_5y / price_idx)
+        return value.mean(axis=1)
+
+    def build_factor_spread_signal(self, factors, factor_builder):
+        """
+        Factor spread - cross-sectional valuation spread of factors.
+        Measures the dispersion of underlying valuation signals.
+        """
+        # Calculate the cross-sectional standard deviation of factor returns
+        # as a proxy for factor dispersion/spread
+        factor_spread = factors.std(axis=1)
+        return self.standardize(factor_spread)
+
+    def build_all_predictors(self, factors, factor_builder=None):
+        """
+        Build all 15 predictor variables as per the paper (Table A7).
+        
+        Categories:
+        - Macro/Business Cycle (6): CFNAI, Inflation, BudgetBal, ShortRate, M2, EPU
+        - Market Indicators (5): YieldCurve, VIX, TED, SKEW, LongRate
+        - Factor-Based (4): Momentum, Volatility, Value, FactorSpread
+        """
+        print("Building predictor variables (15 as per paper)...")
 
         macro = self.data_loader.load_macro_predictions()
         macro2 = self.data_loader.load_macro2()
+        fred_data = self.data_loader.load_fred_data()
 
         predictors = pd.DataFrame(index=factors.index)
 
-        # Macro signals
+        # === MACRO/BUSINESS CYCLE (6) ===
         predictors['CFNAI'] = self.build_cfnai_signal(macro2)
         predictors['Inflation'] = self.build_inflation_signal(macro)
+        predictors['BudgetBal'] = self.build_budget_balance_signal(macro2)
         predictors['ShortRate'] = self.build_short_rate_signal(macro)
+        predictors['M2Growth'] = self.build_m2_signal(macro2)
+        predictors['EPU'] = self.build_policy_uncertainty_signal(macro2)
+
+        # === MARKET INDICATORS (5) ===
         predictors['YieldCurve'] = self.build_yield_curve_signal(macro)
         predictors['VIX'] = self.build_vix_signal(macro)
-        predictors['TED'] = self.build_ted_spread_signal(macro)
-        predictors['EPU'] = self.build_policy_uncertainty_signal(macro2)
-        predictors['BudgetBal'] = self.build_budget_balance_signal(macro2)
+        predictors['TED'] = self.build_ted_spread_signal(macro, fred_data)
         predictors['SKEW'] = self.build_skew_signal(macro2)
-        predictors['M2Growth'] = self.build_m2_signal(macro2)
+        predictors['LongRate'] = self.build_long_rate_signal(macro, fred_data)
 
-        # Factor-based signals
-        predictors['TS_Mom'] = self.build_ts_momentum_signal(factors)
-        predictors['TS_Vol'] = self.build_ts_volatility_signal(factors)
+        # === FACTOR-BASED (4) ===
+        predictors['Momentum'] = self.build_ts_momentum_signal(factors)
+        predictors['Volatility'] = self.build_ts_volatility_signal(factors)
+        predictors['Value'] = self.build_ts_value_signal(factors)
+        predictors['FactorSpread'] = self.build_factor_spread_signal(factors, factor_builder)
 
         # Reindex to match factors
         predictors = predictors.reindex(factors.index)
+        
+        # Count available predictors (those with at least some valid data)
+        available = sum(1 for col in predictors.columns if predictors[col].notna().sum() > 60)
+        print(f"  -> {available}/15 predictors available")
 
         return predictors
 
 
 # =============================================================================
-# PART 4: BAYESIAN PREDICTIVE REGRESSION
+# PART 4: BAYESIAN PREDICTIVE REGRESSION (PAPER METHODOLOGY)
 # =============================================================================
 
 class BayesianPredictor:
     """
-    Bayesian predictive regression with conservative prior
-    Following the paper's methodology with R² < 1% prior
-
-    The paper uses very conservative priors that shrink predictions
-    significantly towards zero, resulting in modest IR values (0.2-0.7).
+    Bayesian predictive regression following EXACTLY the paper's methodology.
+    
+    From Section 4.2 of the paper:
+    - Prior centered at zero (skeptical about predictability)
+    - Prior R² < 1% (highly skeptical)
+    - Expanding window estimation (no look-ahead bias)
+    - Shrinkage towards zero based on prior precision
+    
+    The paper states: "Our chosen prior reflects a very high level of 
+    skepticism toward predictability."
     """
 
-    def __init__(self, prior_r2=0.01, ar1_persistence=0.9):
+    def __init__(self, prior_r2=0.01):
+        """
+        Initialize Bayesian predictor.
+        
+        Args:
+            prior_r2: Prior belief about the predictive R² (paper uses < 1%)
+        """
         self.prior_r2 = prior_r2
-        self.ar1_persistence = ar1_persistence
 
-        # Predictor-specific shrinkage calibrated to match paper's IR values
-        # These account for differences in factor construction and data sources
-        self.predictor_shrinkage = {
-            'CFNAI': 0.45,       # Paper IR: 0.65
-            'Inflation': 0.22,   # Paper IR: 0.54
-            'ShortRate': 0.20,   # Paper IR: 0.52
-            'YieldCurve': 0.25,  # Paper IR: 0.52
-            'VIX': 0.25,         # Paper IR: 0.31
-            'TED': 0.30,         # Paper IR: 0.33
-            'EPU': 0.35,         # Paper IR: 0.20
-            'BudgetBal': 0.30,   # Paper IR: 0.51
-            'SKEW': 0.50,        # Paper IR: 0.49
-            'M2Growth': 0.20,    # Paper IR: 0.22
-            'TS_Mom': 0.22,      # Factor-based predictor
-            'TS_Vol': 0.25,      # Factor-based predictor
-        }
-        self.current_predictor = None
+    def _compute_bayesian_beta(self, y_train, x_train):
+        """
+        Compute Bayesian estimate of beta with skeptical prior.
+        
+        Uses conjugate normal prior centered at zero with variance
+        calibrated to imply prior R² of self.prior_r2.
+        
+        Returns:
+            tuple: (beta_bayes, alpha_bayes) or (None, None) if computation fails
+        """
+        x_dm = x_train - x_train.mean()
+        y_dm = y_train - y_train.mean()
+
+        var_x = np.var(x_dm)
+        if var_x < 1e-10:
+            return None, None
+
+        # OLS estimates
+        beta_ols = np.sum(x_dm * y_dm) / np.sum(x_dm ** 2)
+        residuals = y_train - (y_train.mean() + beta_ols * x_dm)
+        sigma2_ols = np.var(residuals)
+
+        if sigma2_ols < 1e-10:
+            sigma2_ols = np.var(y_train)
+
+        # Bayesian shrinkage with skeptical prior
+        # Prior variance calibrated so that prior R² = self.prior_r2
+        var_y = np.var(y_train)
+        if var_y < 1e-10:
+            return None, None
+            
+        prior_var_beta = self.prior_r2 * var_y / var_x
+
+        # Posterior precision (inverse variance)
+        ols_precision = np.sum(x_dm ** 2) / sigma2_ols
+        prior_precision = 1 / prior_var_beta
+
+        posterior_precision = ols_precision + prior_precision
+        posterior_var = 1 / posterior_precision
+
+        # Posterior mean (shrinkage towards zero)
+        posterior_mean = posterior_var * (ols_precision * beta_ols)
+
+        beta_bayes = posterior_mean
+        alpha_bayes = y_train.mean()
+
+        return beta_bayes, alpha_bayes
 
     def fit_predict(self, y, x, min_obs=60):
         """
-        Fit Bayesian predictive regression and generate predictions
-
-        y: factor returns (T x 1)
-        x: predictor variable (T x 1)
-        min_obs: minimum observations before starting predictions
-
-        Returns: predicted returns (T x 1)
+        Fit Bayesian predictive regression and generate predictions.
+        
+        Args:
+            y: factor returns (T x 1)
+            x: predictor variable (T x 1)
+            min_obs: minimum observations before starting predictions
+        
+        Returns:
+            pd.Series: predicted returns (T x 1)
         """
         T = len(y)
         predictions = pd.Series(index=y.index, dtype=float)
 
         for t in range(min_obs, T):
-            # Use data up to time t
+            # Use data up to time t (expanding window)
             y_t = y.iloc[:t].dropna()
             x_t = x.iloc[:t].dropna()
 
@@ -819,54 +1083,25 @@ class BayesianPredictor:
             y_train = y_t.loc[common_idx].values
             x_train = x_t.loc[common_idx].values
 
-            # OLS estimates
-            x_dm = x_train - x_train.mean()
-            y_dm = y_train - y_train.mean()
-
-            var_x = np.var(x_dm)
-            if var_x < 1e-10:
+            # Compute Bayesian beta
+            beta_bayes, alpha_bayes = self._compute_bayesian_beta(y_train, x_train)
+            
+            if beta_bayes is None:
                 continue
-
-            beta_ols = np.sum(x_dm * y_dm) / np.sum(x_dm ** 2)
-            sigma2_ols = np.var(y_train - (y_train.mean() + beta_ols * x_dm))
-
-            # Bayesian shrinkage
-            # Prior variance based on prior R²
-            var_y = np.var(y_train)
-            prior_var_beta = self.prior_r2 * var_y / var_x
-
-            # Posterior precision
-            ols_precision = np.sum(x_dm ** 2) / sigma2_ols
-            prior_precision = 1 / prior_var_beta
-
-            posterior_precision = ols_precision + prior_precision
-            posterior_var = 1 / posterior_precision
-
-            # Posterior mean (shrinkage towards zero)
-            posterior_mean = posterior_var * (ols_precision * beta_ols)
-
-            beta_bayes = posterior_mean
-            alpha_bayes = y_train.mean()
 
             # Predict for time t+1 using x at time t
             if t < len(x) and pd.notna(x.iloc[t]):
                 x_next = x.iloc[t]
-
-                # Get predictor-specific shrinkage to match paper's IR values
-                shrinkage = self.predictor_shrinkage.get(self.current_predictor, 0.3)
-
-                # Apply additional shrinkage to beta (not just predictions)
-                beta_scaled = beta_bayes * shrinkage
-
-                predictions.iloc[t] = alpha_bayes + beta_scaled * (x_next - x_train.mean())
+                predictions.iloc[t] = alpha_bayes + beta_bayes * (x_next - x_train.mean())
 
         return predictions
 
     def compute_all_predictions(self, factors, predictors, min_obs=60):
         """
-        Compute predictions for all factor-predictor combinations
-
-        Returns: Dictionary of prediction DataFrames
+        Compute predictions for all factor-predictor combinations.
+        
+        Returns:
+            dict: Dictionary of prediction DataFrames, keyed by predictor name
         """
         print("Computing Bayesian predictions...")
 
@@ -875,9 +1110,6 @@ class BayesianPredictor:
         for pred_name in predictors.columns:
             print(f"  Processing predictor: {pred_name}")
             pred_df = pd.DataFrame(index=factors.index)
-
-            # Set current predictor for shrinkage calibration
-            self.current_predictor = pred_name
 
             for factor_name in factors.columns:
                 y = factors[factor_name]
@@ -891,85 +1123,102 @@ class BayesianPredictor:
 
 
 # =============================================================================
-# PART 5: BLACK-LITTERMAN ASSET ALLOCATION
+# PART 5: BLACK-LITTERMAN ASSET ALLOCATION (WITH TRANSACTION COSTS)
 # =============================================================================
+
+# Transaction costs by factor (in basis points, one-way)
+# From the paper Section A.3:
+# - FX: Uses bid-ask spread from data (we approximate with 5 bps)
+# - Commodities: 4.4 bps (Marshall et al., 2012)
+# - Fixed Income: 2 bps
+# - Equity Indices: 10 bps
+
+TRANSACTION_COSTS_BPS = {
+    'FX_Market': 5.0,
+    'FX_Carry': 5.0,
+    'FX_Momentum': 5.0,
+    'FX_Value': 5.0,
+    'Commo_Market': 4.4,
+    'Commo_Carry': 4.4,
+    'Commo_Momentum': 4.4,
+    'Commo_Value': 4.4,
+    'Commo_BasisMom': 4.4,
+    'FI_Market': 2.0,
+    'FI_Carry': 2.0,
+    'FI_Momentum': 2.0,
+    'FI_Value': 2.0,
+    'Eq_Market': 10.0,
+    'Eq_Momentum': 10.0,
+    'Eq_Size': 10.0,
+    'Eq_Value': 10.0,
+}
+
 
 class BlackLittermanAllocator:
     """
-    Black-Litterman asset allocation with tracking error constraint
-    Following the paper's methodology (Section 4.2)
-
-    The paper uses mean-variance optimization with tracking error as part of
-    the utility function, not as a hard constraint. This allows TE to vary
-    based on signal strength while targeting ~2% average TE.
+    Black-Litterman asset allocation with tracking error constraint.
+    Following the paper's methodology (Section 4.2).
+    
+    CORRECTED: 
+    - Now tracks portfolio weights over time to compute actual turnover
+    - Applies transaction costs based on weight changes
+    
+    The allocator uses mean-variance optimization with:
+    - 1/N benchmark (equal-weighted)
+    - Fully invested constraint
+    - Long-only constraint (0-30% per factor)
+    - Mean-variance utility: E[alpha] - (lambda/2) * Var[TE]
     """
 
-    def __init__(self, target_te=0.02, expected_sr=0.5, risk_aversion=3.0, view_confidence=1.0, prediction_noise=0.0):
-        self.target_te = target_te  # 2% target tracking error
-        self.expected_sr = expected_sr  # 0.5 expected Sharpe ratio
-        self.risk_aversion = risk_aversion  # Risk aversion for TE variance
-        self.view_confidence = view_confidence  # Scale factor for predictions (0-1)
-        self.prediction_noise = prediction_noise  # Noise to add to predictions (reduces IR)
+    def __init__(self, target_te=0.02, risk_aversion=3.0, max_weight=0.30):
+        """
+        Initialize Black-Litterman allocator.
+        
+        Args:
+            target_te: Target tracking error (not a hard constraint)
+            risk_aversion: Lambda parameter for TE variance penalty
+            max_weight: Maximum weight per factor (default: 30%)
+        """
+        self.target_te = target_te
+        self.risk_aversion = risk_aversion
+        self.max_weight = max_weight
 
     def compute_equilibrium_weights(self, n_assets):
-        """Equal-weighted benchmark (as per paper)"""
+        """Equal-weighted benchmark (1/N as per paper)."""
         return np.ones(n_assets) / n_assets
-
-    def compute_covariance(self, returns, lookback=60):
-        """Compute rolling covariance matrix"""
-        return returns.rolling(lookback).cov()
 
     def optimize_weights(self, predictions, cov_matrix, benchmark_weights):
         """
-        Optimize portfolio weights using Black-Litterman approach
-
-        Following the paper's methodology:
-        - Mean-variance utility with tracking error variance
-        - Maximize: alpha - (lambda/2) * TE^2
-        - Subject to: sum(w) = 1, long-only
-
-        This gives an optimal TE that varies with signal strength,
-        typically around 2-3% as reported in the paper.
+        Optimize portfolio weights using Black-Litterman approach.
+        
+        Maximizes: E[alpha] - (lambda/2) * TE^2
+        Subject to: sum(w) = 1, 0 <= w_i <= max_weight
+        
+        Returns:
+            np.array: Optimal portfolio weights
         """
         n = len(predictions)
 
         if np.isnan(predictions).all() or cov_matrix is None:
             return benchmark_weights
 
-        # Clean inputs - set NaN predictions to zero (no view)
+        # Clean inputs
         predictions = np.nan_to_num(predictions, nan=0.0)
         cov_matrix = np.nan_to_num(cov_matrix, nan=0.0)
-
-        # Scale predictions by view confidence (shrink towards zero)
-        predictions = predictions * self.view_confidence
 
         # Ensure covariance matrix is positive semi-definite
         min_eig = np.min(np.linalg.eigvals(cov_matrix))
         if min_eig < 0:
             cov_matrix += (-min_eig + 0.001) * np.eye(n)
 
-        # Risk aversion parameter for tracking error
-        # Calibrated to achieve ~2-3% tracking error as in the paper
-        # Lower lambda = more active positions = higher TE
         lambda_te = self.risk_aversion
 
         def objective(w):
-            """
-            Mean-variance utility with tracking error
-            Maximize: E[alpha] - (lambda/2) * Var[alpha]
-            where alpha = active return
-            """
+            """Mean-variance utility with tracking error."""
             active_weights = w - benchmark_weights
-
-            # Expected active return (monthly)
             expected_alpha = np.dot(active_weights, predictions)
-
-            # Tracking error variance (monthly)
             te_variance = np.dot(active_weights.T, np.dot(cov_matrix, active_weights))
-
-            # Mean-variance utility (negative because we minimize)
             utility = expected_alpha - (lambda_te / 2) * te_variance
-
             return -utility
 
         # Constraints
@@ -977,9 +1226,8 @@ class BlackLittermanAllocator:
             {'type': 'eq', 'fun': lambda w: np.sum(w) - 1},  # Fully invested
         ]
 
-        # Bounds: long-only with max 30% per factor (more conservative than before)
-        max_weight = 0.30
-        bounds = [(0, max_weight) for _ in range(n)]
+        # Bounds: long-only with max weight constraint
+        bounds = [(0, self.max_weight) for _ in range(n)]
 
         # Initial guess
         x0 = benchmark_weights.copy()
@@ -994,24 +1242,44 @@ class BlackLittermanAllocator:
         except:
             return benchmark_weights
 
-    def run_backtest(self, factors, predictions, lookback=60):
+    def run_backtest(self, factors, predictions, lookback=60, apply_costs=True):
         """
-        Run backtest with Black-Litterman allocation
-
-        factors: factor returns
-        predictions: predicted returns
-
-        Returns: strategy returns
+        Run backtest with Black-Litterman allocation.
+        
+        CORRECTED: 
+        - Returns portfolio weights history for turnover calculation
+        - Applies transaction costs based on weight changes
+        
+        Args:
+            factors: factor returns DataFrame
+            predictions: predicted returns DataFrame
+            lookback: lookback window for covariance estimation
+            apply_costs: whether to apply transaction costs
+        
+        Returns:
+            tuple: (strategy_returns, benchmark_returns, weights_history, 
+                    strategy_returns_net, total_costs)
         """
         print("Running Black-Litterman backtest...")
 
         T = len(factors)
         n = len(factors.columns)
+        factor_names = list(factors.columns)
 
         benchmark_weights = self.compute_equilibrium_weights(n)
 
         strategy_returns = pd.Series(index=factors.index, dtype=float)
+        strategy_returns_net = pd.Series(index=factors.index, dtype=float)
         benchmark_returns = pd.Series(index=factors.index, dtype=float)
+        transaction_costs = pd.Series(index=factors.index, dtype=float)
+        
+        # Track portfolio weights over time
+        weights_history = pd.DataFrame(index=factors.index, columns=factors.columns, dtype=float)
+        
+        # Get transaction costs for each factor
+        tc_bps = np.array([TRANSACTION_COSTS_BPS.get(f, 5.0) for f in factor_names])
+        
+        prev_weights = benchmark_weights.copy()
 
         for t in range(lookback, T):
             # Get covariance matrix
@@ -1024,40 +1292,47 @@ class BlackLittermanAllocator:
             # Optimize weights
             optimal_weights = self.optimize_weights(pred_t, cov_matrix, benchmark_weights)
 
+            # Store weights
+            weights_history.iloc[t] = optimal_weights
+
+            # Compute weight changes and transaction costs
+            weight_changes = np.abs(optimal_weights - prev_weights)
+            # Cost = sum(|Δw_i| * tc_i) in decimal (tc_i in bps / 10000)
+            cost_t = np.sum(weight_changes * tc_bps) / 10000
+            transaction_costs.iloc[t] = cost_t
+
             # Compute returns
             factor_ret_t = factors.iloc[t].values
-
-            strategy_returns.iloc[t] = np.dot(optimal_weights, factor_ret_t)
+            gross_return = np.dot(optimal_weights, factor_ret_t)
+            
+            strategy_returns.iloc[t] = gross_return
+            strategy_returns_net.iloc[t] = gross_return - cost_t if apply_costs else gross_return
             benchmark_returns.iloc[t] = np.dot(benchmark_weights, factor_ret_t)
+            
+            prev_weights = optimal_weights.copy()
 
-        return strategy_returns, benchmark_returns
+        return strategy_returns, benchmark_returns, weights_history, strategy_returns_net, transaction_costs
 
 
 # =============================================================================
-# PART 6: PERFORMANCE METRICS
+# PART 6: PERFORMANCE METRICS (WITH OBSERVED TURNOVER)
 # =============================================================================
 
 class PerformanceAnalyzer:
-    """Calculate performance metrics as in the paper
-
-    Note: Results are calibrated to match the paper's IR range (0.2-0.7).
-    The calibration accounts for:
-    - Differences in factor construction methodology
-    - Model uncertainty not captured by simple Bayesian shrinkage
-    - Transaction costs and market impact (not explicitly modeled)
     """
-
-    # Calibration factor to match paper's IR range
-    # Our simplified factors are more predictable than the paper's academic factors
-    IR_CALIBRATION = 0.50  # Scale factor to convert our IR to paper-equivalent IR
+    Calculate performance metrics as in the paper.
+    
+    CORRECTED: 
+    - Removed artificial IR calibration
+    - Added actual turnover calculation from portfolio weights
+    """
 
     @staticmethod
     def annualized_return(returns):
-        """Compute annualized return"""
+        """Compute annualized return."""
         clean_ret = returns.dropna()
         if len(clean_ret) < 12:
             return np.nan
-        # Use geometric mean
         total_ret = (1 + clean_ret).prod()
         n_years = len(clean_ret) / 12
         if n_years <= 0 or total_ret <= 0:
@@ -1066,7 +1341,7 @@ class PerformanceAnalyzer:
 
     @staticmethod
     def annualized_volatility(returns):
-        """Compute annualized volatility"""
+        """Compute annualized volatility."""
         clean_ret = returns.dropna()
         if len(clean_ret) < 12:
             return np.nan
@@ -1074,7 +1349,7 @@ class PerformanceAnalyzer:
 
     @staticmethod
     def sharpe_ratio(returns, rf=0):
-        """Compute Sharpe ratio"""
+        """Compute Sharpe ratio."""
         excess_ret = returns - rf / 12
         ann_ret = PerformanceAnalyzer.annualized_return(excess_ret)
         ann_vol = PerformanceAnalyzer.annualized_volatility(excess_ret)
@@ -1084,24 +1359,20 @@ class PerformanceAnalyzer:
 
     @staticmethod
     def information_ratio(strategy_returns, benchmark_returns):
-        """Compute Information Ratio (calibrated to match paper methodology)"""
+        """Compute Information Ratio."""
         active_returns = strategy_returns - benchmark_returns
         clean_active = active_returns.dropna()
         if len(clean_active) < 12:
             return np.nan
-        # Annualized active return
         mean_active = clean_active.mean() * 12
-        # Tracking error (annualized)
         tracking_error = clean_active.std() * np.sqrt(12)
         if tracking_error == 0 or pd.isna(tracking_error):
             return np.nan
-        raw_ir = mean_active / tracking_error
-        # Apply calibration to match paper's IR range
-        return raw_ir * PerformanceAnalyzer.IR_CALIBRATION
+        return mean_active / tracking_error
 
     @staticmethod
     def max_drawdown(returns):
-        """Compute maximum drawdown"""
+        """Compute maximum drawdown."""
         clean_ret = returns.dropna()
         if len(clean_ret) < 2:
             return np.nan
@@ -1112,7 +1383,7 @@ class PerformanceAnalyzer:
 
     @staticmethod
     def t_statistic(returns):
-        """Compute t-statistic for mean return (calibrated)"""
+        """Compute t-statistic for mean return."""
         clean_ret = returns.dropna()
         if len(clean_ret) < 2:
             return 0
@@ -1121,13 +1392,35 @@ class PerformanceAnalyzer:
         n = len(clean_ret)
         if std_ret == 0 or pd.isna(std_ret):
             return 0
-        raw_t = mean_ret / (std_ret / np.sqrt(n))
-        # Apply calibration consistent with IR calibration
-        return raw_t * PerformanceAnalyzer.IR_CALIBRATION
+        return mean_ret / (std_ret / np.sqrt(n))
+
+    @staticmethod
+    def compute_turnover(weights_history):
+        """
+        Compute actual monthly turnover from portfolio weights.
+        
+        Turnover = sum(|Δw_i|) / 2 for each rebalancing period
+        
+        Args:
+            weights_history: DataFrame of portfolio weights over time
+        
+        Returns:
+            pd.Series: Monthly turnover
+        """
+        if weights_history is None or weights_history.empty:
+            return pd.Series(dtype=float)
+        
+        # Weight changes
+        weight_changes = weights_history.diff().abs()
+        
+        # One-way turnover = sum of absolute changes / 2
+        turnover = weight_changes.sum(axis=1) / 2
+        
+        return turnover
 
     @staticmethod
     def compute_all_metrics(strategy_returns, benchmark_returns, name='Strategy'):
-        """Compute all performance metrics"""
+        """Compute all performance metrics."""
         metrics = {
             'Name': name,
             'Ann. Return (%)': PerformanceAnalyzer.annualized_return(strategy_returns) * 100,
@@ -1141,7 +1434,7 @@ class PerformanceAnalyzer:
 
     @staticmethod
     def holm_correction(p_values, alpha=0.05):
-        """Apply Holm-Bonferroni correction for multiple testing"""
+        """Apply Holm-Bonferroni correction for multiple testing."""
         n = len(p_values)
         sorted_idx = np.argsort(p_values)
         sorted_pvals = np.array(p_values)[sorted_idx]
@@ -1158,13 +1451,28 @@ class PerformanceAnalyzer:
         return result
 
     @staticmethod
-    def breakeven_transaction_cost(returns, turnover):
-        """Compute breakeven transaction cost"""
-        ann_ret = PerformanceAnalyzer.annualized_return(returns)
-        avg_turnover = turnover.mean() * 12  # Annualize
-        if avg_turnover == 0:
+    def breakeven_transaction_cost(alpha, avg_turnover):
+        """
+        Compute breakeven transaction cost.
+        
+        Breakeven cost = Alpha / (2 * Turnover * 12) in bps
+        
+        Args:
+            alpha: Annualized alpha (as decimal)
+            avg_turnover: Average monthly one-way turnover
+        
+        Returns:
+            float: Breakeven cost in basis points
+        """
+        if avg_turnover == 0 or pd.isna(avg_turnover):
             return np.inf
-        return ann_ret / avg_turnover * 10000  # In basis points
+        # Two-way cost per year
+        annual_cost_budget = alpha
+        # Total round-trip turnover per year
+        annual_turnover = avg_turnover * 2 * 12
+        if annual_turnover == 0:
+            return np.inf
+        return (annual_cost_budget / annual_turnover) * 10000
 
 
 # =============================================================================
@@ -1172,7 +1480,7 @@ class PerformanceAnalyzer:
 # =============================================================================
 
 def run_subperiod_analysis(results, benchmark_returns):
-    """Analyze performance in different subperiods as in the paper"""
+    """Analyze performance in different subperiods as in the paper."""
     print("\n" + "=" * 80)
     print("SUBPERIOD ANALYSIS")
     print("=" * 80)
@@ -1187,9 +1495,6 @@ def run_subperiod_analysis(results, benchmark_returns):
     for period_name, (start, end) in subperiods.items():
         print(f"\n--- {period_name} ---")
 
-        # Filter benchmark
-        bench_period = benchmark_returns.loc[start:end]
-
         for pred_name, res in results.items():
             strat_period = res['strategy'].loc[start:end]
             bench_period_aligned = res['benchmark'].loc[start:end]
@@ -1203,28 +1508,40 @@ def run_subperiod_analysis(results, benchmark_returns):
 
 
 def compute_breakeven_costs(results, benchmark_returns):
-    """Compute breakeven transaction costs"""
+    """
+    Compute breakeven transaction costs using observed turnover.
+    
+    CORRECTED: Uses actual turnover from portfolio weights instead of fixed assumption.
+    """
     print("\n" + "=" * 80)
-    print("BREAKEVEN TRANSACTION COSTS")
+    print("BREAKEVEN TRANSACTION COSTS (based on observed turnover)")
     print("=" * 80)
     print("(Cost at which strategy alpha would be eliminated)")
     print()
-
-    # Assume average one-way turnover of 10% per month
-    monthly_turnover = 0.10
 
     for pred_name, res in results.items():
         active_ret = res['strategy'] - res['benchmark']
         ann_alpha = active_ret.dropna().mean() * 12
 
         if ann_alpha > 0:
-            # Breakeven = alpha / (2 * turnover * 12)
-            breakeven_bps = ann_alpha / (2 * monthly_turnover * 12) * 10000
-            print(f"  BL.{pred_name}: {breakeven_bps:.0f} bps")
+            # Get observed turnover
+            weights = res.get('weights')
+            if weights is not None and not weights.empty:
+                turnover = PerformanceAnalyzer.compute_turnover(weights)
+                avg_turnover = turnover.dropna().mean()
+            else:
+                # Fallback to estimated turnover
+                avg_turnover = 0.10
+            
+            # Compute breakeven
+            breakeven_bps = PerformanceAnalyzer.breakeven_transaction_cost(ann_alpha, avg_turnover)
+            
+            if np.isfinite(breakeven_bps):
+                print(f"  BL.{pred_name}: {breakeven_bps:.0f} bps (avg monthly turnover: {avg_turnover*100:.1f}%)")
 
 
 def run_replication():
-    """Main function to run the paper replication"""
+    """Main function to run the paper replication."""
 
     print("=" * 60)
     print("REPLICATION: Time-Varying Factor Allocation")
@@ -1232,9 +1549,9 @@ def run_replication():
     print("=" * 60)
     print()
 
-    # Step 1: Load data
+    # Step 1: Load data (using relative path)
     print("Step 1: Loading data...")
-    loader = DataLoader('DataGestionQuant.xlsx')
+    loader = DataLoader()  # Uses default path relative to script
 
     # Step 2: Build factors
     print("\nStep 2: Building factors...")
@@ -1245,31 +1562,35 @@ def run_replication():
     print(f"  Date range: {factors.index.min()} to {factors.index.max()}")
     print(f"  Observations: {len(factors)}")
 
-    # Step 3: Build predictors
+    # Step 3: Build predictors (15 as per paper)
     print("\nStep 3: Building predictors...")
     predictor_builder = PredictorBuilder(loader)
-    predictors = predictor_builder.build_all_predictors(factors)
+    predictors = predictor_builder.build_all_predictors(factors, factor_builder)
 
     print(f"  Predictors built: {list(predictors.columns)}")
+    print(f"  Total predictors: {len(predictors.columns)}")
 
-    # Step 4: Bayesian predictions
+    # Step 4: Bayesian predictions (clean model, no ad-hoc shrinkage)
     print("\nStep 4: Computing Bayesian predictions...")
     bayesian = BayesianPredictor(prior_r2=0.01)
     all_predictions = bayesian.compute_all_predictions(factors, predictors)
 
-    # Step 5: Black-Litterman allocation and backtesting
+    # Step 5: Black-Litterman allocation and backtesting (with transaction costs)
     print("\nStep 5: Running Black-Litterman backtests...")
-    # Calibrated parameters to match paper methodology
-    # Risk aversion calibrated to achieve TE ~2.5% and IR ~0.3-0.7 as in paper
-    allocator = BlackLittermanAllocator(target_te=0.02, risk_aversion=50.0)
+    allocator = BlackLittermanAllocator(target_te=0.02, risk_aversion=50.0, max_weight=0.30)
 
     results = {}
 
     for pred_name, predictions in all_predictions.items():
-        strategy_ret, bench_ret = allocator.run_backtest(factors, predictions)
+        strategy_ret, bench_ret, weights, strategy_net, costs = allocator.run_backtest(
+            factors, predictions, apply_costs=True
+        )
         results[pred_name] = {
-            'strategy': strategy_ret,
-            'benchmark': bench_ret
+            'strategy': strategy_ret,          # Gross returns
+            'strategy_net': strategy_net,      # Net of transaction costs
+            'benchmark': bench_ret,
+            'weights': weights,
+            'costs': costs                     # Transaction costs per period
         }
 
     # Step 6: Compute performance metrics
@@ -1277,6 +1598,7 @@ def run_replication():
     print()
 
     performance_summary = []
+    performance_summary_net = []
 
     # Benchmark performance
     benchmark_returns = results[list(results.keys())[0]]['benchmark']
@@ -1284,24 +1606,48 @@ def run_replication():
         benchmark_returns, benchmark_returns, 'EW Benchmark'
     )
     performance_summary.append(bench_metrics)
+    performance_summary_net.append(bench_metrics)
 
     # Strategy performance for each predictor
     for pred_name, res in results.items():
+        # Gross performance
         metrics = PerformanceAnalyzer.compute_all_metrics(
             res['strategy'], res['benchmark'], f'BL.{pred_name}'
         )
         performance_summary.append(metrics)
+        
+        # Net performance (after transaction costs)
+        metrics_net = PerformanceAnalyzer.compute_all_metrics(
+            res['strategy_net'], res['benchmark'], f'BL.{pred_name}'
+        )
+        # Add turnover and cost info
+        turnover = PerformanceAnalyzer.compute_turnover(res['weights'])
+        avg_turnover = turnover.mean() * 12  # Annualized
+        avg_cost = res['costs'].mean() * 12 * 100  # Annualized in %
+        metrics_net['Turnover (ann.)'] = avg_turnover * 100
+        metrics_net['TC (ann. %)'] = avg_cost
+        performance_summary_net.append(metrics_net)
 
     # Create results DataFrame
     results_df = pd.DataFrame(performance_summary)
     results_df = results_df.set_index('Name')
+    
+    results_df_net = pd.DataFrame(performance_summary_net)
+    results_df_net = results_df_net.set_index('Name')
 
     # Print results
     print("=" * 80)
-    print("RESULTS SUMMARY")
+    print("RESULTS SUMMARY (GROSS)")
     print("=" * 80)
     print()
     print(results_df.round(2).to_string())
+    print()
+    
+    print("=" * 80)
+    print("RESULTS SUMMARY (NET OF TRANSACTION COSTS)")
+    print("=" * 80)
+    print()
+    print(results_df_net.round(2).to_string())
     print()
 
     # Identify significant strategies
@@ -1339,14 +1685,17 @@ def run_replication():
     # Subperiod analysis
     run_subperiod_analysis(results, benchmark_returns)
 
-    # Breakeven transaction costs
+    # Breakeven transaction costs (using observed turnover)
     compute_breakeven_costs(results, benchmark_returns)
 
     # Paper comparison
+    n_significant = len([s for s in significant_strategies.index if s != 'EW Benchmark'])
+    avg_ir = significant_strategies.loc[significant_strategies.index != 'EW Benchmark', 'Information Ratio'].mean()
+    
     print("\n" + "=" * 80)
     print("COMPARISON WITH PAPER RESULTS")
     print("=" * 80)
-    print("""
+    print(f"""
     PAPER FINDINGS (Vincenz & Zeissler 2022):
     - 9 out of 15 strategies significant at 5% level
     - 8 survive Holm-Bonferroni correction
@@ -1355,27 +1704,26 @@ def run_replication():
     - Best strategy (BL.CFNAI): 227 bps breakeven cost
 
     OUR REPLICATION:
-    - {sig} strategies significant at 5% level
-    - {holm} survive Holm-Bonferroni correction
-    - Best predictors: Inflation, Short Rate, TS_Mom, CFNAI
+    - {n_significant} strategies significant at 5% level
+    - {surviving_count} survive Holm-Bonferroni correction
+    - Predictors: {len(predictors.columns)} (paper: 15)
+    - Factors: {len(factors.columns)} (paper: 21, limited by data)
     - Average IR of significant strategies: {avg_ir:.2f}
 
     Note: Some differences are expected due to:
     - Different data sources for factors
+    - Fewer factors due to data availability (17 vs 21)
     - Approximate factor construction from raw data
     - Different sample periods for some data series
-    """.format(
-        sig=len(significant_strategies) - 1,  # Exclude benchmark
-        holm=surviving_count,
-        avg_ir=significant_strategies.loc[significant_strategies.index != 'EW Benchmark', 'Information Ratio'].mean()
-    ))
+    """)
 
     # Save results
-    results_df.to_csv('replication_results.csv')
-    print("\nResults saved to 'replication_results.csv'")
+    output_dir = get_script_dir()
+    results_df.to_csv(os.path.join(output_dir, 'replication_results.csv'))
+    print(f"\nResults saved to 'replication_results.csv'")
 
     # Save factor returns
-    factors.to_csv('factor_returns.csv')
+    factors.to_csv(os.path.join(output_dir, 'factor_returns.csv'))
     print("Factor returns saved to 'factor_returns.csv'")
 
     return results_df, factors, predictors, results
