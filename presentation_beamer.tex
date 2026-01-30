@@ -981,6 +981,81 @@
     \end{block}
 \end{frame}
 
+% =============================================================================
+% EXTENSION (1/3): ENSEMBLE
+% =============================================================================
+\begin{frame}{Extension: Ensemble Bayes--VAR (hybride)}
+
+\begin{alertblock}{Id\'ee}
+    Combiner l'information \textbf{exog\`ene} (macro/march\'e) et \textbf{endog\`ene} (VAR sur facteurs)
+    pour am\'eliorer le compromis rendement--risque.
+\end{alertblock}
+
+\begin{block}{Construction du signal}
+\[
+    \hat{\mu}_t^{ENS}
+    = \tfrac{1}{2}\hat{\mu}_t^{BayesAvg}
+    + \tfrac{1}{2}\hat{\mu}_t^{VAR}
+\]
+\vspace{-0.2cm}
+\begin{itemize}
+    \item $\hat{\mu}_t^{BayesAvg}$ : moyenne des pr\'edictions bay\'esiennes sur l'ensemble des pr\'edicteurs
+    \item $\hat{\mu}_t^{VAR}$ : pr\'ediction issue du VAR(1) roulant (lookback 120m, ridge $\alpha = 10^{-3}$)
+\end{itemize}
+\end{block}
+
+\end{frame}
+
+
+% =============================================================================
+% EXTENSION (2/3): RESULTS TABLE
+% =============================================================================
+\begin{frame}{Extension: R\'esultats (VAR vs Ensemble)}
+
+\begin{block}{R\'esultats cl\'es (1967--2018, mensuel)}
+\begin{table}[h]
+    \centering
+    \small
+    \begin{tabular}{lcccc}
+        \toprule
+        \textbf{Strat\'egie} & \textbf{Ann. Ret.} & \textbf{Vol} & \textbf{Sharpe} & \textbf{IR} \\
+        \midrule
+        \textbf{BL.VAR} & 6.20\% & 5.16\% & 1.20 & 0.89 \\
+        \textbf{BL.ENS\_BayesVAR} & 6.31\% & 4.87\% & 1.29 & 1.01 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+\end{block}
+
+\end{frame}
+
+
+% =============================================================================
+% EXTENSION (3/3): SIGNIFICANCE + TAKEAWAY
+% =============================================================================
+\begin{frame}{Extension: Robustesse et message cl\'e}
+
+\begin{block}{Robustesse statistique}
+\begin{itemize}
+    \item Tests de significativit\'e sur les rendements actifs (strat\'egie -- benchmark)
+    \item Correction de Holm--Bonferroni pour tenir compte des tests multiples
+    \item \textbf{BL.VAR} et \textbf{BL.ENS\_BayesVAR} restent significatives (\(p\) ajust\'e \(< 5\%\))
+\end{itemize}
+\end{block}
+
+\begin{block}{Lecture \'economique}
+\begin{itemize}
+    \item VAR capte la dynamique \emph{intra-facteurs} (autocorr\'elations, spillovers)
+    \item L'ensemble combine cycle macro + dynamique factorielle
+    \item Drawdowns: \textbf{VAR} (-12.1\%) vs \textbf{Ensemble} (-10.6\%) $\rightarrow$ meilleur compromis
+\end{itemize}
+\end{block}
+
+\end{frame}
+
+
+
+
 \begin{frame}{Limites et Am\'eliorations Possibles}
     \begin{block}{Limites de Notre Impl\'ementation}
         \begin{itemize}
@@ -999,6 +1074,9 @@
         \end{enumerate}
     \end{block}
 \end{frame}
+
+
+
 
 \begin{frame}{R\'ef\'erences}
     \begin{block}{Article Principal}
