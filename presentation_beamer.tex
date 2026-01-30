@@ -4,7 +4,7 @@
 \usetheme{Madrid}
 \usecolortheme{whale}
 \setbeamertemplate{navigation symbols}{}
-\setbeamertemplate{footline}[frame number]
+\setbeamertemplate{footline}{\hfill\insertframenumber}
 
 % Packages
 \usepackage[utf8]{inputenc}
@@ -957,41 +957,6 @@
     \begin{alertblock}{Impact}
         12 pr\'edicteurs sur 15 = 80\% de couverture. Les principaux signaux sont pr\'esents.
     \end{alertblock}
-\end{frame}
-
-\begin{frame}{Synthèse des Justifications}
-    \begin{block}{Analyse du Code et du Papier : Ce qui a été Respecté}
-        Après analyse du code (\texttt{paper\_replication.py}) et du papier Vincenz \& Zeissler (2022), la méthodologie est fidèlement respectée :
-        \begin{itemize}
-            \item \textbf{Construction des facteurs} : Tri en sextiles (top/bottom 16.67\%), poids long-short équilibrés, volatilité-scaling à 10\% annuel (lookback 36 mois)
-            \item \textbf{Régression bayésienne} : Prior conservateur ($R^2 = 1\%$), shrinkage adaptatif, standardisation des prédicteurs (lookback 120 mois)
-            \item \textbf{Allocation Black-Litterman} : Aversion au risque $\lambda = 5$, confiance dans les views 50\% × scale par prédicteur, covariance rolling 60 mois
-            \item \textbf{Évaluation} : Ratios d'information, t-statistiques, tests Holm-Bonferroni, analyse par sous-périodes
-        \end{itemize}
-        Le code implémente exactement ces éléments, avec des ajustements mineurs justifiés.
-    \end{block}
-
-    \begin{block}{Analyse : Proxies Utilisés et Justifications}
-        \begin{itemize}
-            \item \textbf{FX Value} : Proxy MA 5 ans au lieu de $\Delta_{5y}$ taux réel -- justifié économiquement (mean-reversion), implémenté dans \texttt{build\_fx\_factors}
-            \item \textbf{FI Carry} : Fallback sur niveau 10Y si pente indisponible -- justifié par corrélation élevée, code gère automatiquement
-            \item \textbf{Commodity Value} : Formule $(P_t/P_{t-60}-1)$ équivalente -- mathématiquement validée, plus stable numériquement
-            \item \textbf{TED Spread} : Proxy HY Spread -- corrélation >0.7, même interprétation risk-on/risk-off
-        \end{itemize}
-        Aucun proxy n'altère la logique du papier ; ils sont validés empiriquement.
-    \end{block}
-
-    \begin{alertblock}{Analyse : Éléments Non Implémentés}
-        \begin{itemize}
-            \item \textbf{Facteurs (4/21 manquants)} : FX Hedging Pressure, Commo Hedging Pressure, Eq Quality/Low-Vol -- données COT ou fondamentales indisponibles (non dans \texttt{DataGestionQuant.xlsx})
-            \item \textbf{Prédicteurs (3/15 manquants)} : RTS.10Y (TIPS yields manquants), TS-Value (signal agrégé non clair), FCTR.SPRD (définition floue) -- implémentation impossible sans données propriétaires
-        \end{itemize}
-        Impact : 17 facteurs (80\% des 21) et 12 prédicteurs (80\% des 15) ; les éléments principaux (carry, momentum, value) sont présents.
-    \end{alertblock}
-
-    \begin{block}{Résumé Qualitatif pour l'Oral}
-        \textbf{Points à justifier} : La réplication est robuste et fidèle au papier malgré les contraintes de données publiques. Les proxies sont des approximations valides, justifiées théoriquement et testées empiriquement. Nous n'avons omis que l'inaccessible (données propriétaires indisponibles), préservant l'essence de la méthodologie. Résultats cohérents : IR ~0.4, stratégies significatives similaires.
-    \end{block}
 \end{frame}
 
 % =============================================================================
