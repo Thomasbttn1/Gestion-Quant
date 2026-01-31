@@ -482,26 +482,6 @@
     \end{alertblock}
 \end{frame}
 
-\begin{frame}{Standardisation des Pr\'edicteurs}
-    \begin{block}{M\'ethode Expanding Window}
-        Pour \'eviter le look-ahead bias:
-        $$z_{t} = \frac{x_t - \mu_{1:t}}{\sigma_{1:t}}$$
-
-        \begin{itemize}
-            \item $\mu_{1:t}$ = moyenne de toutes les observations jusqu'\`a $t$
-            \item $\sigma_{1:t}$ = \'ecart-type de toutes les observations jusqu'\`a $t$
-            \item Minimum 120 observations avant de commencer
-        \end{itemize}
-    \end{block}
-
-    \begin{block}{Cas Sp\'eciaux}
-        \begin{itemize}
-            \item \textbf{TED Spread}: Donn\'ees Bloomberg invalides $\rightarrow$ proxy HY Spread
-            \item \textbf{Budget Balance}: S\'erie courte (2001-2017) $\rightarrow$ lookback 36 mois
-            \item \textbf{M2 Growth}: Utilise le taux de croissance YoY, pas le niveau
-        \end{itemize}
-    \end{block}
-\end{frame}
 
 % =============================================================================
 % SECTION 5: BAYESIAN REGRESSION
