@@ -167,10 +167,9 @@
         \begin{column}{0.5\textwidth}
             \begin{block}{Classes d'Actifs}
                 \begin{itemize}
-                    \item \textbf{Devises (FX)}: 9 paires vs USD
+                    \item \textbf{Devises (FX)}: 59 paires vs USD
                         \begin{itemize}
-                            \item GBP, EUR, JPY, CHF, CAD
-                            \item AUD, NZD, SEK, NOK
+                            \item GBP, EUR, JPY, CHF, CAD, AUD, NZD, SEK, NOK...
                         \end{itemize}
                     \item \textbf{Commodities}: Futures front \& 2nd month
                         \begin{itemize}
@@ -370,15 +369,13 @@
             \end{block}
         \end{column}
         \begin{column}{0.5\textwidth}
-            \begin{block}{FI Value}
+            \begin{block}{FI Value and FI Momentum}
                 Yield relatif \`a sa moyenne historique
                 $$s^{value} = \frac{y_t}{MA_{60}(y)} - 1$$
                 Yield \'elev\'e vs historique = ``cheap''
+                Momentum : Rendement cumul\'e 12-1 mois
             \end{block}
 
-            \begin{block}{FI Momentum}
-                Rendement cumul\'e 12-1 mois
-            \end{block}
         \end{column}
     \end{columns}
 \end{frame}
@@ -667,12 +664,6 @@
     \end{block}
 \end{frame}
 
-\begin{frame}{Heatmap des Correlations Facteurs}
-    \begin{center}
-        \includegraphics[width=0.75\textwidth]{fig3_factor_heatmap.png}
-    \end{center}
-\end{frame}
-
 \begin{frame}{Analyse par Sous-P\'eriodes}
     \begin{center}
         \includegraphics[width=0.85\textwidth]{fig4_subperiod_analysis.png}
@@ -683,44 +674,10 @@
     \end{block}
 \end{frame}
 
-\begin{frame}{Information Ratios Rolling}
-    \begin{center}
-        \includegraphics[width=0.85\textwidth]{fig5_rolling_ir.png}
-    \end{center}
-\end{frame}
-
 \begin{frame}{Analyse des Drawdowns}
     \begin{center}
         \includegraphics[width=0.85\textwidth]{fig6_drawdowns.png}
     \end{center}
-\end{frame}
-
-\begin{frame}{Comparaison des Max Drawdowns}
-    \begin{table}[h]
-        \centering
-        \small
-        \begin{tabular}{lcc}
-            \toprule
-            Stratégie & Original (\%) & Réplication (\%) \\
-            \midrule
-            BL.CFNAI & -9.39 & -10.57 \\
-            BL.INFLTN & -9.76 & -7.37 \\
-            BL.PLTCL.UNCRTNTY & -9.17 & -7.95 \\
-            BL.BDGT.BLNC & -10.66 & -7.95 \\
-            BL.RTS.3M & -9.34 & -8.07 \\
-            BL.GLBL.M2.SPPLY & -10.56 & -7.32 \\
-            BL.Mom & -6.87 & -8.63 \\
-            BL.Vola & -9.14 & -8.90 \\
-            BL.Value & -7.92 & N/A \\
-            BL.FCTR.SPRD & -21.48 & N/A \\
-            BL.Steep\_Yld\_Crv & -7.50 & -6.11 \\
-            BL.VIX & -10.59 & -6.65 \\
-            BL.TED & -13.16 & -6.90 \\
-            BL.SPX.SKWNSS & -20.14 & -7.87 \\
-            BL.RTS.10Y & -11.96 & N/A \\
-            \bottomrule
-        \end{tabular}
-    \end{table}
 \end{frame}
 
 \begin{frame}{R\'esum\'e Statistique}
@@ -797,15 +754,12 @@
 \begin{frame}{Comparatif des Volatilit\'es Impactantes}
     \begin{table}[h]
         \centering
+        \small
         \begin{tabular}{lcc}
             \toprule
-            \textbf{Strat\'egie} & \textbf{Vol Papier (estim\'ee)} & \textbf{Vol Notre R\'eplication} \\
+            Benchmark & Original (\%) & Réplication (\%) \\
             \midrule
-            BL.VIX        & $\sim 9.4\%$ & $10.2\%$ \\
-            BL.CFNAI      & $\sim 9.5\%$ & $10.2\%$ \\
-            BL.ShortRate  & $\sim 9.7\%$ & $10.3\%$ \\
-            BL.Inflation  & $\sim 9.8\%$ & $10.1\%$ \\
-            BL.TS\_Mom    & $\sim 9.9\%$ & $10.0\%$ \\
+            EW Benchmark & 2.5 & 3.5 \\
             \bottomrule
         \end{tabular}
     \end{table}
