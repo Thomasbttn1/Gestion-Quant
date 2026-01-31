@@ -695,6 +695,34 @@
     \end{center}
 \end{frame}
 
+\begin{frame}{Comparaison des Max Drawdowns}
+    \begin{table}[h]
+        \centering
+        \small
+        \begin{tabular}{lcc}
+            \toprule
+            Stratégie & Original (\%) & Réplication (\%) \\
+            \midrule
+            BL.CFNAI & -9.39 & -10.57 \\
+            BL.INFLTN & -9.76 & -7.37 \\
+            BL.PLTCL.UNCRTNTY & -9.17 & -7.95 \\
+            BL.BDGT.BLNC & -10.66 & -7.95 \\
+            BL.RTS.3M & -9.34 & -8.07 \\
+            BL.GLBL.M2.SPPLY & -10.56 & -7.32 \\
+            BL.Mom & -6.87 & -8.63 \\
+            BL.Vola & -9.14 & -8.90 \\
+            BL.Value & -7.92 & N/A \\
+            BL.FCTR.SPRD & -21.48 & N/A \\
+            BL.Steep\_Yld\_Crv & -7.50 & -6.11 \\
+            BL.VIX & -10.59 & -6.65 \\
+            BL.TED & -13.16 & -6.90 \\
+            BL.SPX.SKWNSS & -20.14 & -7.87 \\
+            BL.RTS.10Y & -11.96 & N/A \\
+            \bottomrule
+        \end{tabular}
+    \end{table}
+\end{frame}
+
 \begin{frame}{R\'esum\'e Statistique}
     \begin{block}{Tests de Significativit\'e}
         \begin{itemize}
@@ -937,19 +965,16 @@
             \item \textbf{RTS.10Y}: Rendement r\'eel 10 ans US
                 \begin{itemize}
                     \item Requiert: TIPS yields ou inflation expectations
-                    \item Alternative: pourrait utiliser 10Y nominal - CPI
                 \end{itemize}
 
             \item \textbf{TS-Value}: Signal value agr\'eg\'e des facteurs
                 \begin{itemize}
                     \item Requiert: value signal de chaque facteur
-                    \item Pourrait \^etre calcul\'e en post-processing
                 \end{itemize}
 
             \item \textbf{FCTR.SPRD}: Factor spread
                 \begin{itemize}
                     \item D\'efinition pas claire dans le papier
-                    \item Possiblement: dispersion des rendements factoriels
                 \end{itemize}
         \end{enumerate}
     \end{block}
